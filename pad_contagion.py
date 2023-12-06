@@ -1,80 +1,74 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Created on Tue Jan  3 17:12:45 2023
+Created on Sun Aug 22 16:52:39 2021
 
 @author: hzh
 """
 
 import numpy as np
 import random
+import networkx as nx
 import pickle
 from multiprocessing.pool import Pool
+import tqdm
+from itertools import combinations
+import os
+import copy
 
-class simplex_vertex:
+# In[8]:
 
+class Simplex_Vertex:
     def __init__(self, vertex_id, activity, probability):
         self.act = activity
         self.p = probability
         self.name = vertex_id
         self.memory_one = []
         self.memory_high = []
-    
-    def new_edge(self, node, size):
-        nodes = list(np.array(node))
+
+    def new_edge(self, nodes, size):
         nodes.remove(self.name)
         edge_list = []
         choice_nodes = random.sample(nodes, size)
-        for num in range(len(choice_nodes)):
-            edge_list.append((self.name, choice_nodes[num]))
+        for choice_node in choice_nodes:
+            edge_list.append((self.name, choice_node))
         self.memory_one.append(edge_list)
         return edge_list
-    
-    def new_collab(self, node, size):
-        nodes = list(np.array(node))
-        nodes.remove(self.name)
-        e1 = random.sample(nodes,size-1)
-        e1.append(self.name)
-        self.memory_high.append(e1)
-        return e1
 
-class SISModel():
-    def __init__(self, TG, I_percentage, edge, simplex, vertex_dict):
+    def new_collab(self, nodes, size):
+        nodes.remove(self.name)
+        simplex = random.sample(nodes, size - 1)
+        simplex.append(self.name)
+        self.memory_high.append(simplex)
+        return simplex
+
+class Variable_class:
+    def __init__(self, edge, simplex, N):
+        self.N = N
         self.edge_dict = {}
         self.triangles_dict = {}
-        self.vertex_dict = vertex_dict
-        for t_value,triangle in simplex.items():
-            temp_edge = []
-            temp_triangle = []
-            for i in range(len(triangle)):
-                nums = triangle[i]
-                self.dfs(temp_edge,nums, 2,0,[])
-                self.dfs(temp_triangle,nums, 3,0,[])
-            for num in range(len(edge[t_value])):
-                temp_edge.append(edge[t_value][num])
-            self.edge_dict[t_value] = temp_edge
-            self.triangles_dict[t_value] = temp_triangle
-        self.neighbors = {}
-        for i in range(len(TG)):
-            neights = {}
-            for j in TG[i].nodes():
-                neights[j] = set(TG[i].neighbors(j))
-            self.neighbors[i] = neights
-        self.nodes = list(self.neighbors[0].keys())
-        self.N = len(self.neighbors[0].keys())
+        for t_value, simplex_list in tqdm.tqdm(simplex.items()):
+            temporal_edge = set()
+            temporal_triangle = set()
+            for one_simplex in simplex_list:
+                for triangle in combinations(one_simplex, 3):
+                    temporal_triangle.add(tuple(sorted(triangle)))
+                for one_edge in combinations(one_simplex, 2):
+                    temporal_edge.add(tuple(sorted(one_edge)))
+            for one_edge in edge[t_value]:
+                temporal_edge.add(tuple(sorted(one_edge)))
+            self.edge_dict[t_value] = list(temporal_edge)
+            self.triangles_dict[t_value] = list(temporal_triangle)
+    
+        
+class SISModel:
+    def __init__(self, N, I_percentage):
+        #self.edge_dict = edge_dict
+        #self.triangles_dict = triangles_dict
+        self.nodes = [i for i in range(N)]
+        self.N = N
         self.I = I_percentage * self.N/100
         #self.initial_infected_nodes = self.initial_setup()
-
-    def dfs(self,ans,num_list,n,point,temp_list):
-        if len(temp_list)==n:
-            ans.append(tuple(temp_list[:]))
-            return
-        if len(num_list)<n or point>=len(num_list):
-            return
-        self.dfs(ans,num_list,n,point+1,temp_list)
-        temp_list.append(num_list[point])
-        self.dfs(ans,num_list,n,point+1,temp_list)
-        temp_list.pop()
     
     def initial_setup(self,fixed_nodes_to_infect=None,print_status=True):
         self.sAgentSet = set()
@@ -86,7 +80,6 @@ class SISModel():
         
         for n in self.nodes:
             self.sAgentSet.add(n)
-            
         if fixed_nodes_to_infect==None: 
             infected_this_setup=[]
             for ite in range(int(self.I)): 
@@ -111,12 +104,12 @@ class SISModel():
         return -1
     
     def run(self, beta, beta2, mu, print_status=True):
-        self.t_max = len(self.edge_dict)
+        self.t_max = len(variable.edge_dict)
         
         while len(self.iAgentSet) > 0 and len(self.sAgentSet) != 0 and self.t<self.t_max:
             newIlist = set()
             
-            for edges in self.edge_dict[self.t]:
+            for edges in variable.edge_dict[self.t]:
                 begin,end = edges
                 if (begin in self.iAgentSet) and (end in self.sAgentSet):
                     if (random.random() <= beta):
@@ -125,28 +118,36 @@ class SISModel():
                     if (random.random() <= beta):
                         newIlist.add(begin)
               
-            for triangle_value in self.triangles_dict[self.t]:
+            #TRIANGLE CONTAGION
+            
+            for triangle_value in variable.triangles_dict[self.t]:
                 n1,n2,n3 = triangle_value
                 if n1 in self.iAgentSet:
                     if n2 in self.iAgentSet:
                         if n3 in self.sAgentSet:
+                            #infect n3 with probability beta2
                             if (random.random() < beta2): 
                                 newIlist.add(n3)
                     else:
                         if n3 in self.iAgentSet:
+                            #infect n2 with probability beta2
                             if (random.random() < beta2): 
                                 newIlist.add(n2)
                 else:
                     if (n2 in self.iAgentSet) and (n3 in self.iAgentSet):
+                        #infect n1 with probability beta2
                         if (random.random() < beta2): 
                             newIlist.add(n1)
             
             for n_to_infect in newIlist:
                 self.infectAgent(n_to_infect)
             
+            #for recoveries
             newSlist = set()
+            
             if len(self.iAgentSet)<self.N:
                 for recoverAgent in self.iAgentSet:
+                    #if the agent has just been infected it will not recover this time
                     if recoverAgent in newIlist:
                         continue
                     else:
@@ -155,7 +156,10 @@ class SISModel():
 
             for n_to_recover in newSlist:
                 self.recoverAgent(n_to_recover)
+            
             self.iList.append(len(self.iAgentSet))
+            
+            #increment the time
             self.t += 1
         '''if print_status: 
             print('lambda', beta/mu, 'Done!', len(self.iAgentSet), 'infected agents left')'''
@@ -167,69 +171,71 @@ class SISModel():
             return 0
         if normed:
             i = 1.*np.array(i)/self.N
+        #print(i)
         if i[-1]==1:
             return 1
         elif i[-1]==0:
             return 0
         else:
             avg_i = np.mean(i[-last_k_values:])
-            avg_i = np.nan_to_num(avg_i)
+            avg_i = np.nan_to_num(avg_i) #if there are no infected left nan->0   
             return avg_i
 
 
 def run_one_simulation(par):
-    mySISModel, I_percentage, beta, beta2, mu,it_num = par
-    mySISModel.I = I_percentage * mySISModel.N / 100
-   #mySISModel.initial_setup(fixed_nodes_to_infect=mySISModel.initial_infected_nodes)
-    temps = []
-    for defeat in range(it_num):
+    I_percentage, beta1, beta2, mu, it_num, idx = par
+    mySISModel = SISModel(variable.N, I_percentage)
+    frc_infected = []
+    pbar = tqdm.tqdm(range(it_num))
+    for repeat in pbar:
+        pbar.set_description('Processing {}'.format(str(idx)))
         mySISModel.initial_setup(fixed_nodes_to_infect=None)
-        mySISModel.run(beta,beta2,mu,print_status=True)
-        rho = mySISModel.get_stationary_rho(normed=True,last_k_values=8)
-        temps.append(rho)
-    frc_infected = temps
-    dicts = dict(zip(['it_num','I_percentage','beta','beta2','mu','lambda1','lambda2','infected'],[it_num,I_percentage,beta,beta2,mu,beta/mu,beta2/mu,frc_infected]))
+        i_lists = mySISModel.run(beta1, beta2, mu, print_status=True)
+        rho = mySISModel.get_stationary_rho(normed=True, last_k_values=10)
+        frc_infected.append(rho)
+    dicts = dict(zip(['it_num', 'I_percentage', 'beta1', 'beta2', 'mu', 'lambda1', 'lambda2', 'infected'],[it_num, I_percentage, beta1, beta2, mu, beta1/mu, beta2/mu, frc_infected]))
     return dicts
-
-def run_one_network(arg):
-    filename,beta_list,beta2_list,mu,I_percentage_list,times = arg
-    with open(filename,'rb') as file:
-        dicts = pickle.load(file)
-    N = dicts['N']
-    T = dicts['T']
-    a_value = dicts['act_value']
-    p_value = dicts['p_value']
-    s_list = dicts['s_list']
-    s_probability = dicts['s_probability']
-    TG = dicts['TG']
-    vertex_dict = dicts['vertex_dict']
-    edge = dicts['edge']
-    simplex = dicts['simplex']
-    mySISModel = SISModel(TG,I_percentage_list[0],edge,simplex,vertex_dict)
-    results = []
-    for i_per in I_percentage_list:
-        for beta_value in beta_list:
-            for beta2_value in beta2_list:
-                par = [mySISModel,i_per,beta_value,beta2_value,mu,times]
-                results.append(run_one_simulation(par))
-    savename = './lambda2_influence/lambda2_influence_N={}_T={}_a={}_p={}_slist={}_spro={}.txt'.format(N,T,a_value,p_value,s_list,s_probability)
-    with open(savename,'wb') as file:
-        pickle.dump(results,file)
 
 
 if __name__ == '__main__':
-    filename_list = []
-    p_list = [0.5]
-    name_model = ''
-    for p_value in p_list:
-        filename_list.append(name_model.format(p_value))
+    filename_list = ['simplex_size=[3, 4, 5]_pro_cdf=[0.3333333333333333, 0.6666666666666666, 1]_m=[3, 6, 10]_N=1500_T=40000_eta=2.3_epsilon=0.03608615000027534_p=0.5.data']
     I_percentage_list = np.array([3,70])
     mu = 0.001
-    beta_list = np.linspace(0,1.5,41)*mu
-    beta2_list = np.array([0,1,3,5])*mu
-    times = 10
-    args = []
-    for filename in filename_list:
-        args.append([filename,beta_list,beta2_list,mu,I_percentage_list,times])
-    pool = Pool(processes=1)
-    pool.map(run_one_network,args)
+    beta1_list = np.linspace(0,1.2,121)*mu
+    beta2_list = np.linspace(0,8,201)*mu
+    times = 20
+    filename_idx = 0
+    with open(os.path.join('network_data',filename_list[filename_idx]),'rb') as file:
+        dicts = pickle.load(file)
+    file.close()
+    N = dicts['N']
+    T = dicts['T']
+    eta = dicts['eta']
+    epsilon = dicts['epsilon']
+    p_value = dicts['p_value']
+    m = dicts['m_list']
+    simplex_size = dicts['simplex_size']
+    pro_cdf = dicts['pro_cdf']
+    TG = dicts['temporal_network']
+    edge = dicts['edge']
+    simplex = dicts['simplex']
+    variable = Variable_class(edge, simplex, N)
+    paras = []
+    for i_per in I_percentage_list:
+        for beta1 in beta1_list:
+            for beta2 in beta2_list:
+                paras.append([i_per, beta1, beta2, mu, times])
+    random.shuffle(paras)
+    for idx in range(len(paras)):
+        paras[idx].append(idx)
+    pool = Pool(processes=24)
+    res_return = []
+    for para in paras:
+        res_one = pool.apply_async(run_one_simulation, args=(para,))
+        res_return.append(res_one)
+    pool.close()
+    pool.join()
+    res_all = [res_one.get() for res_one in res_return]
+    savename = ''
+    with open(savename,'wb') as file:
+        pickle.dump(res_all,file)
